@@ -17,11 +17,17 @@ pub struct Service<'owner> {
     assign_tasks: Vec<u32>,
     cfs_paths: Option<SchedPaths>,
     foreground_processes: Vec<u32>,
-    foreground: Option<u32>,
+    foreground: Option<ForegroundTarget>,
     gc_counter: usize,
     owner: LCellOwner<'owner>,
     pipewire_processes: Vec<u32>,
     process_map: process::Map<'owner>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ForegroundTarget {
+    Process(u32),
+    Cgroup(String),
 }
 
 impl<'owner> Service<'owner> {
@@ -264,11 +270,8 @@ impl<'owner> Service<'owner> {
                     }
                 }
 
-                if let (Some(assignments), Some(foreground)) =
-                    (&self.config.process_scheduler.foreground, &self.foreground)
-                {
-                    if process.id == *foreground || self.foreground_processes.contains(&process.id)
-                    {
+                if let Some(assignments) = &self.config.process_scheduler.foreground {
+                    if self.process_is_foreground(process) {
                         &assignments.foreground
                     } else {
                         &assignments.background
@@ -454,6 +457,21 @@ impl<'owner> Service<'owner> {
         process.pipewire_ancestor.is_some() || self.pipewire_processes.contains(&process.id)
     }
 
+    pub fn process_is_foreground(&self, process: &Process<'owner>) -> bool {
+        let Some(foreground) = &self.foreground else {
+            return false;
+        };
+
+        match foreground {
+            ForegroundTarget::Process(pid) => {
+                process.id == *pid
+                    || self.foreground_processes.contains(&process.id)
+                    || self.process_descended_from(process, *pid)
+            }
+            ForegroundTarget::Cgroup(cgroup) => process_cgroup_matches(&process.cgroup, cgroup),
+        }
+    }
+
     /// Adds a new process to the process map
     pub fn process_map_insert(
         &mut self,
@@ -524,10 +542,8 @@ impl<'owner> Service<'owner> {
 
         std::mem::swap(&mut process_map, &mut self.process_map);
 
-        // Reassign foreground processes in case they were overriden.
-        if let Some(process) = self.foreground.take() {
-            self.set_foreground_process(buffer, process);
-        }
+        // Reassign foreground processes in case they were overridden.
+        self.reapply_foreground(buffer);
     }
 
     /// Reloads the configuration files.
@@ -540,7 +556,7 @@ impl<'owner> Service<'owner> {
         self.assign_children(buffer, pid);
 
         if let Some(ref assignments) = self.config.process_scheduler.foreground {
-            self.foreground = Some(pid);
+            self.foreground = Some(ForegroundTarget::Process(pid));
             self.foreground_processes.clear();
             self.foreground_processes.push(pid);
 
@@ -567,6 +583,64 @@ impl<'owner> Service<'owner> {
                 }
             }
         }
+    }
+
+    /// Sets a cgroup subtree as the foreground.
+    pub fn set_foreground_cgroup(&mut self, buffer: &mut Buffer, cgroup: &str) {
+        let cgroup = normalize_foreground_cgroup(cgroup);
+
+        if cgroup.is_empty() {
+            self.clear_foreground(buffer);
+            return;
+        }
+
+        if self.config.process_scheduler.foreground.is_none() {
+            return;
+        }
+
+        self.foreground = Some(ForegroundTarget::Cgroup(cgroup));
+        self.foreground_processes.clear();
+        self.reapply_foreground(buffer);
+    }
+
+    /// Clears the active foreground process or cgroup target.
+    pub fn clear_foreground(&mut self, buffer: &mut Buffer) {
+        if self.foreground.take().is_none() {
+            return;
+        }
+
+        self.foreground_processes.clear();
+        self.reapply_foreground(buffer);
+    }
+
+    fn reapply_foreground(&mut self, buffer: &mut Buffer) {
+        let Some(assignments) = &self.config.process_scheduler.foreground else {
+            return;
+        };
+
+        let foreground = self.foreground.clone();
+        self.foreground_processes.clear();
+
+        for process_cell in self.process_map.map.values() {
+            let process = process_cell.ro(&self.owner);
+
+            if let Priority::Assignable = self.process_assignment(process.id) {
+                if self.process_is_pipewire_assigned(process) {
+                    continue;
+                }
+
+                let profile = if self.process_is_foreground(process) {
+                    self.foreground_processes.push(process.id);
+                    &assignments.foreground
+                } else {
+                    &assignments.background
+                };
+
+                crate::priority::set(buffer, process.id, profile);
+            }
+        }
+
+        self.foreground = foreground;
     }
 
     /// Assigns a process to the pipewire profile if it does not already have an assignment.
@@ -634,6 +708,31 @@ impl<'owner> Service<'owner> {
     }
 }
 
+fn normalize_foreground_cgroup(cgroup: &str) -> String {
+    let cgroup = cgroup.trim();
+
+    if cgroup == "/" {
+        return String::from("/");
+    }
+
+    cgroup.trim_end_matches('/').to_owned()
+}
+
+fn process_cgroup_matches(process: &str, foreground: &str) -> bool {
+    if process.is_empty() || foreground.is_empty() {
+        return false;
+    }
+
+    if foreground == "/" {
+        return process.starts_with('/');
+    }
+
+    process == foreground
+        || process
+            .strip_prefix(foreground)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Priority<'a> {
     Assignable,
@@ -659,5 +758,43 @@ impl OwnedPriority {
             Self::Exception => Priority::Exception,
             Self::NotAssignable => Priority::NotAssignable,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_foreground_cgroup, process_cgroup_matches};
+
+    #[test]
+    fn foreground_cgroup_matches_exact_scope() {
+        assert!(process_cgroup_matches(
+            "/user.slice/user-1000.slice/app.slice/app-org.test.scope",
+            "/user.slice/user-1000.slice/app.slice/app-org.test.scope"
+        ));
+    }
+
+    #[test]
+    fn foreground_cgroup_matches_child_scope() {
+        assert!(process_cgroup_matches(
+            "/user.slice/user-1000.slice/app.slice/app-org.test.scope/session",
+            "/user.slice/user-1000.slice/app.slice/app-org.test.scope"
+        ));
+    }
+
+    #[test]
+    fn foreground_cgroup_does_not_match_prefix_sibling() {
+        assert!(!process_cgroup_matches(
+            "/user.slice/user-1000.slice/app.slice/app-org.test.scope-extra",
+            "/user.slice/user-1000.slice/app.slice/app-org.test.scope"
+        ));
+    }
+
+    #[test]
+    fn foreground_cgroup_normalization_trims_trailing_slashes() {
+        assert_eq!(
+            normalize_foreground_cgroup(" /user.slice/app.scope/// "),
+            "/user.slice/app.scope"
+        );
+        assert_eq!(normalize_foreground_cgroup("/"), "/");
     }
 }
