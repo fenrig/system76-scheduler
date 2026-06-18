@@ -53,6 +53,12 @@ pub trait Client {
 
     /// This process will have its process group prioritized over background processes
     fn set_foreground_process(&mut self, pid: u32) -> zbus::fdo::Result<()>;
+
+    /// Processes in this cgroup subtree will be prioritized over background processes
+    fn set_foreground_cgroup(&mut self, cgroup: &str) -> zbus::fdo::Result<()>;
+
+    /// Clear the current foreground process or cgroup target
+    fn clear_foreground(&mut self) -> zbus::fdo::Result<()>;
 }
 
 #[dbus_interface(name = "com.system76.Scheduler")]
@@ -95,6 +101,16 @@ impl Server {
     /// This process will have its process group prioritized over background processes
     async fn set_foreground_process(&mut self, pid: u32) {
         let _res = self.tx.send(Event::SetForegroundProcess(pid)).await;
+    }
+
+    /// Processes in this cgroup subtree will be prioritized over background processes
+    async fn set_foreground_cgroup(&mut self, cgroup: String) {
+        let _res = self.tx.send(Event::SetForegroundCgroup(cgroup)).await;
+    }
+
+    /// Clear the current foreground process or cgroup target
+    async fn clear_foreground(&mut self) {
+        let _res = self.tx.send(Event::ClearForeground).await;
     }
 }
 

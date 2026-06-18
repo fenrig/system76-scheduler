@@ -31,6 +31,7 @@ use crate::utils::Buffer;
 
 #[derive(Debug)]
 enum Event {
+    ClearForeground,
     ExecCreate(ExecCreate),
     OnBattery(bool),
     Pipewire(scheduler_pipewire::ProcessEvent),
@@ -38,6 +39,7 @@ enum Event {
     ReloadConfiguration,
     SetCpuMode,
     SetCustomCpuMode,
+    SetForegroundCgroup(String),
     SetForegroundProcess(u32),
 }
 
@@ -246,6 +248,18 @@ async fn daemon(
             Event::SetForegroundProcess(pid) => {
                 tracing::debug!("setting {pid} as foreground process");
                 service.set_foreground_process(&mut buffer, pid);
+                service.garbage_clean(&mut buffer);
+            }
+
+            Event::SetForegroundCgroup(cgroup) => {
+                tracing::debug!(cgroup, "setting foreground cgroup");
+                service.set_foreground_cgroup(&mut buffer, &cgroup);
+                service.garbage_clean(&mut buffer);
+            }
+
+            Event::ClearForeground => {
+                tracing::debug!("clearing foreground target");
+                service.clear_foreground(&mut buffer);
                 service.garbage_clean(&mut buffer);
             }
 
