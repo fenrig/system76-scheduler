@@ -54,7 +54,7 @@ In addition to `config.kdl`, additional process scheduling profiles are stored i
 - User-config: `/etc/system76-scheduler/process-scheduler/`
 - Distribution: `/usr/share/system76-scheduler/process-scheduler/`
 
-An [example configuration is provided here](./data/pop_os.kdl). It is parsed the same as the assignments and exceptions nodes in the main config, and profiles can inherit values from the previous assignment of the same name.
+Example profile fragments are provided in [core-services.kdl](./data/core-services.kdl), [default-apps.kdl](./data/default-apps.kdl), [arch_linux.kdl](./data/arch_linux.kdl), [kde_plasma.kdl](./data/kde_plasma.kdl), [pop_os.kdl](./data/pop_os.kdl), and [user-overrides.kdl](./data/user-overrides.kdl). They are parsed the same as the assignments and exceptions nodes in the main config, and profiles can inherit values from the previous assignment of the same name.
 
 ### Profile
 

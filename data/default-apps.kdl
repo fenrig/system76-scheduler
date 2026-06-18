@@ -1,0 +1,92 @@
+assignments {
+	recording {
+		amsynth
+		easyeffects
+		jamesdsp
+		mixxx
+		wireplumber
+		bitwig-studio
+		include name="Bitwig*"
+	}
+
+	game-services nice=0 io=(best-effort)0 {
+		include name="wineserver"
+	}
+
+	desktop-environment {
+		gnome-shell
+		i3wm
+		sway
+		Hyprland
+		gamescope
+		Xorg
+	}
+
+	session-services {
+		include parent="gnome-session-binary"
+		include parent="gvfsd"
+	}
+
+	package-manager {
+		include name="apt-*"
+		include name="dpkg-*"
+		apt
+		dpkg
+		flatpak
+		fwupd
+		packagekitd
+		update-initramfs
+	}
+
+	batch {
+		bleachbit
+		btop
+		clamd
+		clamonacc
+		fangfrisch
+		freshclam
+		git
+		ssh
+		ssh-agent
+		timeshift
+		include name="sbuild-*"
+		"7z"
+		"7za"
+		"7zr"
+		ar
+		boinc
+		c++
+		cargo
+		clang
+		cmake
+		cpp
+		FAHClient
+		FAHCoreWrapper
+		fossilize-replay
+		g++
+		gcc
+		gradle
+		grub-mkconfig
+		javac
+		ld
+		lld
+		make
+		mkconfig
+		mkinitcpio
+		mold
+		mvn
+		ninja
+		bitbake
+		rust-analyzer
+		rustc
+		sbuild
+		tar
+		tracker-miner-fs-3
+		unrar
+		zip
+	}
+}
+
+exceptions {
+
+}

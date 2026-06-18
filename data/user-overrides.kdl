@@ -1,0 +1,12 @@
+exceptions {
+    include descends="chrt"
+    include descends="ionice"
+    include descends="nice"
+    include descends="schedtool"
+    include descends="taskset"
+    chrt
+    ionice
+    nice
+    schedtool
+    taskset
+}
