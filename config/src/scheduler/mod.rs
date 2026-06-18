@@ -30,7 +30,7 @@ impl Default for Config {
         Self {
             enable: false,
             execsnoop: false,
-            refresh_rate: 60,
+            refresh_rate: 300,
             assignments: Assignments::default(),
             foreground: None,
             pipewire: None,

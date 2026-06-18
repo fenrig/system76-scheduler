@@ -19,7 +19,7 @@ cfs-profiles enable=true {
 // Monitors and applies process priority adjustments
 process-scheduler enable=true {
     // How often to reload process assignments. 0 to disable
-    refresh-rate 60
+    refresh-rate 300
 
     // Enable realtime process priority adjustment with execsnoop
     execsnoop true

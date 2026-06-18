@@ -10,17 +10,24 @@ Requires dependencies as defined in the [debian/control](./debian/control) file:
 
 - cargo & rustc
 - clang
+- llvm tools (`llc` and `llvm-objcopy`)
 - just
 - libclang-dev
 - libpipewire-0.3-dev
 - pkg-config
+- rust-src, so the Rust eBPF crate can build `core` for `bpfel-unknown-none`
 
 Then the included justfile can be used to build and install:
 
 ```sh
-just execsnoop=$(which execsnoop-bpfcc) build-release
+just build-release
 sudo just sysconfdir=/usr/share install
 ```
+
+Realtime exec monitoring is implemented with native eBPF and does not require
+`execsnoop-bpfcc`, Python, or `bpfcc-tools` at runtime. Loading the watcher
+requires the usual eBPF/perf permissions, such as `CAP_BPF` and `CAP_PERFMON`
+on modern kernels, or equivalent root privileges.
 
 ## DBus
 

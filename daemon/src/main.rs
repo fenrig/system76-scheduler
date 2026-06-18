@@ -22,10 +22,7 @@ mod utils;
 
 use clap::ArgMatches;
 use dbus::{CpuMode, Server};
-use std::{
-    path::Path,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::Sender;
 use upower_dbus::UPowerProxy;
 use zbus::{Connection, PropertyStream};
@@ -197,16 +194,9 @@ async fn daemon(
             }
         });
 
-        // Use execsnoop-bpfcc to watch for new processes being created.
+        // Use native eBPF to watch for new processes being created.
         if service.config.process_scheduler.execsnoop {
-            if Path::new(execsnoop::EXECSNOOP_PATH).exists() {
-                integrate_execsnoop(tx.clone());
-            } else {
-                tracing::warn!(
-                    "install {} to monitor processes in realtime",
-                    execsnoop::EXECSNOOP_PATH
-                );
-            }
+            integrate_execsnoop(tx.clone());
         }
 
         // Monitors pipewire-connected processes.
@@ -348,45 +338,71 @@ fn autogroup_set(enable: bool) {
 
 /// Listens to exec events from the kernel to get process IDs in realtime.
 fn integrate_execsnoop(tx: Sender<Event>) {
-    tracing::info!("monitoring process IDs in realtime with execsnoop");
+    const INITIAL_EXEC_LOGS: u64 = 16;
+    const EXEC_LOG_INTERVAL: u64 = 1024;
+
+    tracing::debug!("monitoring process IDs in realtime with execsnoop");
     let (scheduled_tx, mut scheduled_rx) = tokio::sync::mpsc::unbounded_channel();
     std::thread::spawn(move || {
         match execsnoop::watch() {
             Ok(mut watcher) => {
+                tracing::debug!("native execsnoop watcher attached");
+                let mut received = 0_u64;
                 // Listen for spawned process, scheduling them to be handled with a delay of 1 second after creation.
                 // The delay is to ensure that a process has been added to a cgroup
                 while let Some(process) = watcher.next() {
-                    let Ok(cmdline) = std::str::from_utf8(process.cmd) else {
-                        continue
-                    };
+                    received += 1;
+                    let cmdline = process.cmd_lossy();
+                    let name = process::name(&cmdline);
 
-                    let name = process::name(cmdline);
+                    if received <= INITIAL_EXEC_LOGS {
+                        tracing::debug!(
+                            pid = process.pid,
+                            parent_pid = process.parent_pid,
+                            name,
+                            cmdline = %cmdline,
+                            "native execsnoop event received"
+                        );
+                    } else if received.is_multiple_of(EXEC_LOG_INTERVAL) {
+                        tracing::debug!(events = received, "native execsnoop events received");
+                    }
 
-                    tracing::debug!(
-                        "{:?} created by {:?} ({name})",
-                        process.pid,
-                        process.parent_pid
-                    );
                     let _res = scheduled_tx.send((
                         Instant::now() + Duration::from_secs(2),
                         ExecCreate {
                             pid: process.pid,
                             parent_pid: process.parent_pid,
                             name: name.to_owned(),
-                            cmdline: cmdline.to_owned(),
+                            cmdline: cmdline.into_owned(),
                         },
                     ));
                 }
             }
             Err(error) => {
-                tracing::error!("failed to start execsnoop: {error}");
+                tracing::warn!("failed to start native execsnoop watcher: {error}");
             }
         }
     });
 
     tokio::task::spawn_local(async move {
+        let mut scheduled = 0_u64;
         while let Some((delay, process)) = scheduled_rx.recv().await {
             tokio::time::sleep_until(delay.into()).await;
+            scheduled += 1;
+            if scheduled <= INITIAL_EXEC_LOGS {
+                tracing::debug!(
+                    pid = process.pid,
+                    parent_pid = process.parent_pid,
+                    name = %process.name,
+                    cmdline = %process.cmdline,
+                    "native execsnoop event delivered to scheduler"
+                );
+            } else if scheduled.is_multiple_of(EXEC_LOG_INTERVAL) {
+                tracing::debug!(
+                    events = scheduled,
+                    "native execsnoop events delivered to scheduler"
+                );
+            }
             let _res = tx.send(Event::ExecCreate(process)).await;
         }
     });
