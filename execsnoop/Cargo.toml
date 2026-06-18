@@ -1,14 +1,14 @@
 [package]
 name = "execsnoop"
-description = "Watch process ID creation in Linux kernel with execsnoop-bpfcc"
+description = "Watch process ID creation in Linux kernel with native eBPF"
 repository = "https://github.com/pop-os/system76-scheduler"
 version = "0.2.0"
 edition = "2021"
 license = "MPL-2.0"
 publish = true
+build = "build.rs"
 
 [dependencies]
-atoi = "2.0.0"
-bstr = "1.4.0"
-bytelines = "2.4.0"
+aya = "0.13.1"
+bytes = "1.0.0"
 tracing = "0.1.37"
