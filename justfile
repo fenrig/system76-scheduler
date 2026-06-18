@@ -52,7 +52,12 @@ check-json: (check '--message-format=json')
 install:
     mkdir -p {{confdir}}/system76-scheduler/process-scheduler
     install -Dm0644 data/config.kdl {{confdir}}/system76-scheduler/config.kdl
+    install -Dm0644 data/arch_linux.kdl {{confdir}}/system76-scheduler/process-scheduler/arch_linux.kdl
+    install -Dm0644 data/core-services.kdl {{confdir}}/system76-scheduler/process-scheduler/core-services.kdl
+    install -Dm0644 data/default-apps.kdl {{confdir}}/system76-scheduler/process-scheduler/default-apps.kdl
+    install -Dm0644 data/kde_plasma.kdl {{confdir}}/system76-scheduler/process-scheduler/kde_plasma.kdl
     install -Dm0644 data/pop_os.kdl {{confdir}}/system76-scheduler/process-scheduler/pop_os.kdl
+    install -Dm0644 data/user-overrides.kdl {{confdir}}/system76-scheduler/process-scheduler/user-overrides.kdl
     install -Dm0755 target/release/{{binary}} {{target-bin}}
     install -Dm0644 data/{{id}}.service {{libdir}}/systemd/system/{{id}}.service
     install -Dm0644 data/{{id}}.conf {{confdir}}/dbus-1/system.d/{{id}}.conf

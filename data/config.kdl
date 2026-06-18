@@ -39,8 +39,8 @@ process-scheduler enable=true {
         // Enables pipewire process monitoring and assignments
         pipewire nice=-6 io=(best-effort)0
 
-        // Video games
-        games nice=-5 io=(best-effort)0
+        // Video games explicitly assigned by user or distribution profiles
+        games nice=2 io=(best-effort)2
 
         // Desktop environments
         desktop-environment nice=-3 io=(best-effort)0
@@ -66,26 +66,7 @@ process-scheduler enable=true {
         // Package management processes
         package-manager nice=15 sched="batch" io="idle"
 
-        // CPU-intense background tasks
-        batch nice=19 sched="idle" io="idle"
-    }
-
-    exceptions {
-        include descends="chrt"
-        include descends="gamemoderun"
-        include descends="ionice"
-        include descends="nice"
-        include descends="taskset"
-        include descends="schedtool"
-        chrt
-        dbus
-        dbus-broker
-        gamemoderun
-        ionice
-        nice
-        rtkit-daemon
-        systemd
-        taskset
-        schedtool
+    // CPU-intense background tasks
+    batch nice=19 sched="idle" io="idle"
     }
 }

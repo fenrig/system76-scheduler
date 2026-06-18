@@ -1,0 +1,14 @@
+assignments {
+	package-manager {
+		makepkg
+		pacman
+		paru
+		pikaur
+		trizen
+		yay
+	}
+}
+
+exceptions {
+
+}

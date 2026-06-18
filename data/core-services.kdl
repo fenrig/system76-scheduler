@@ -1,0 +1,11 @@
+exceptions {
+    dbus
+    dbus-broker
+    foreground_booster
+    system76-scheduler
+    tuned
+    tuned-ppd
+    uresourced
+    rtkit-daemon
+    systemd
+}

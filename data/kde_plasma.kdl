@@ -1,0 +1,40 @@
+assignments {
+	desktop-environment nice=-4 io=(best-effort)0 {
+		kglobalaccel5
+		kglobalacceld
+		kded5
+		kded6
+		kscreenlocker
+		krunner
+		ksmserver
+		kwin
+		kwin_wayland
+		kwin_x11
+		sddm
+		plasma_session
+		plasmashell
+		xembedsniproxy
+	}
+
+	session-services nice=10 io="idle" {
+		include parent="plasma_session"
+		include parent="startplasma-wayland"
+		include parent="startplasma-x11"
+		xdg-desktop-portal-kde
+	}
+
+	package-manager {
+		pkcon
+	}
+
+	batch {
+		include name="akonadi_*"
+		baloo_file
+		baloo_file_extractor
+		balooctl
+	}
+}
+
+exceptions {
+
+}
