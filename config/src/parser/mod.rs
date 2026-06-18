@@ -1,4 +1,4 @@
-mod cfs;
+mod eevdf;
 mod scheduler;
 
 use std::path::Path;
@@ -88,7 +88,7 @@ fn read_main(buffer: &mut String) -> Config {
             "autogroup-enabled" => {
                 config.autogroup_enabled = node.get_bool(0).unwrap_or(false);
             }
-            "cfs-profiles" => config.cfs_profiles.read(node),
+            "eevdf-profiles" => config.eevdf_profiles.read(node),
             "process-scheduler" => config.process_scheduler.read(node),
             "version" => (),
             other => {

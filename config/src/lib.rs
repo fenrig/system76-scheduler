@@ -5,8 +5,8 @@
 
 //! System76 Scheduler's configuration parsing and logic.
 
-/// CFS configurations
-pub mod cfs;
+/// EEVDF scheduler configurations
+pub mod eevdf;
 
 pub(crate) mod kdl;
 
@@ -30,8 +30,8 @@ pub struct Config {
     /// Controls autogrouping status
     pub autogroup_enabled: bool,
 
-    /// CFS profiles
-    pub cfs_profiles: cfs::Config,
+    /// EEVDF scheduler profiles
+    pub eevdf_profiles: eevdf::Config,
 
     /// Process scheduler config
     pub process_scheduler: scheduler::Config,

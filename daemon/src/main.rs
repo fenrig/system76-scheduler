@@ -12,8 +12,8 @@ use qcell::LCellOwner;
 pub use system76_scheduler_config as config;
 use system76_scheduler_pipewire as scheduler_pipewire;
 
-mod cfs;
 mod dbus;
+mod eevdf;
 mod priority;
 mod process;
 mod pw;
@@ -86,7 +86,7 @@ fn main() -> anyhow::Result<()> {
                     .arg_required_else_help(true)
                     .subcommand(
                         clap::Command::new("cpu")
-                            .about("select a CFS scheduler profile")
+                            .about("select a CPU scheduler profile")
                             .arg(clap::arg!([PROFILE])),
                     )
                     .subcommand(
@@ -175,9 +175,9 @@ async fn daemon(
     // Controls the kernel's sched_autogroup setting.
     autogroup_set(service.config.autogroup_enabled);
 
-    // Tweaks CFS parameters based on battery status.
-    if service.config.cfs_profiles.enable {
-        service.cfs_on_battery(upower.on_battery().await.unwrap_or(false));
+    // Tweaks EEVDF parameters based on battery status.
+    if service.config.eevdf_profiles.enable {
+        service.eevdf_on_battery(upower.on_battery().await.unwrap_or(false));
     }
 
     // If enabled, monitors processes and applies priorities to them.
@@ -280,7 +280,7 @@ async fn daemon(
                 let interface = handle.get().await;
 
                 if let CpuMode::Auto = interface.cpu_mode {
-                    service.cfs_on_battery(on_battery);
+                    service.eevdf_on_battery(on_battery);
                 }
             }
 
@@ -294,17 +294,17 @@ async fn daemon(
                 match interface.cpu_mode {
                     CpuMode::Auto => {
                         tracing::debug!("applying auto config");
-                        service.cfs_on_battery(upower.on_battery().await.unwrap_or(false));
+                        service.eevdf_on_battery(upower.on_battery().await.unwrap_or(false));
                     }
 
                     CpuMode::Default => {
                         tracing::debug!("applying default config");
-                        service.cfs_apply(service.cfs_default_config());
+                        service.eevdf_apply(service.eevdf_default_config());
                     }
 
                     CpuMode::Responsive => {
                         tracing::debug!("applying responsive config");
-                        service.cfs_apply(service.cfs_responsive_config());
+                        service.eevdf_apply(service.eevdf_responsive_config());
                     }
 
                     CpuMode::Custom => (),
@@ -318,9 +318,9 @@ async fn daemon(
 
                 let interface = handle.get().await;
 
-                if let Some(profile) = service.cfs_config(&interface.cpu_profile) {
+                if let Some(profile) = service.eevdf_config(&interface.cpu_profile) {
                     tracing::debug!("applying {} config", interface.cpu_profile);
-                    service.cfs_apply(profile);
+                    service.eevdf_apply(profile);
                 }
             }
 

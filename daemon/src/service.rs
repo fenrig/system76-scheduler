@@ -1,8 +1,8 @@
 // Copyright 2022 System76 <debug@system76.com>
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::cfs::paths::SchedPaths;
 use crate::config::scheduler::Profile;
+use crate::eevdf::paths::SchedPaths;
 use crate::process::{self, Process};
 use crate::utils::Buffer;
 use qcell::{LCell, LCellOwner};
@@ -15,7 +15,7 @@ pub struct Service<'owner> {
     assign_scan: Vec<u32>,
     assign_scanned: Vec<u32>,
     assign_tasks: Vec<u32>,
-    cfs_paths: Option<SchedPaths>,
+    eevdf_paths: Option<SchedPaths>,
     foreground_processes: Vec<u32>,
     foreground: Option<ForegroundTarget>,
     gc_counter: usize,
@@ -36,7 +36,7 @@ impl<'owner> Service<'owner> {
             assign_scan: Vec::with_capacity(16),
             assign_scanned: Vec::with_capacity(16),
             assign_tasks: Vec::with_capacity(16),
-            cfs_paths: SchedPaths::new().ok(),
+            eevdf_paths: SchedPaths::new().ok(),
             config: crate::config::Config::default(),
             foreground_processes: Vec::with_capacity(256),
             foreground: None,
@@ -183,11 +183,11 @@ impl<'owner> Service<'owner> {
         for pid in tasks.drain(..) {
             if self.process_map.get_pid(pid).is_none() {
                 let Some(parent_pid) = process::parent_id(buffer, pid) else {
-                    continue
+                    continue;
                 };
 
                 let Some(cmdline) = process::cmdline(buffer, pid) else {
-                    continue
+                    continue;
                 };
 
                 let name = process::name(&cmdline).to_owned();
@@ -290,38 +290,38 @@ impl<'owner> Service<'owner> {
         crate::priority::set(buffer, process.id, profile);
     }
 
-    pub fn cfs_apply(&self, config: &crate::config::cfs::Profile) {
-        let Some(paths) = &self.cfs_paths else {
+    pub fn eevdf_apply(&self, config: &crate::config::eevdf::Profile) {
+        let Some(paths) = &self.eevdf_paths else {
             return;
         };
 
-        if !self.config.cfs_profiles.enable {
+        if !self.config.eevdf_profiles.enable {
             return;
         }
 
-        crate::cfs::tweak(paths, config);
+        crate::eevdf::tweak(paths, config);
     }
 
-    pub fn cfs_on_battery(&self, on_battery: bool) {
-        self.cfs_apply(if on_battery {
-            self.cfs_default_config()
+    pub fn eevdf_on_battery(&self, on_battery: bool) {
+        self.eevdf_apply(if on_battery {
+            self.eevdf_default_config()
         } else {
-            self.cfs_responsive_config()
+            self.eevdf_responsive_config()
         });
     }
 
-    pub fn cfs_config(&self, name: &str) -> Option<&crate::config::cfs::Profile> {
-        self.config.cfs_profiles.profiles.get(name)
+    pub fn eevdf_config(&self, name: &str) -> Option<&crate::config::eevdf::Profile> {
+        self.config.eevdf_profiles.profiles.get(name)
     }
 
-    pub fn cfs_default_config(&self) -> &crate::config::cfs::Profile {
-        self.cfs_config("default")
-            .unwrap_or(&crate::config::cfs::PROFILE_DEFAULT)
+    pub fn eevdf_default_config(&self) -> &crate::config::eevdf::Profile {
+        self.eevdf_config("default")
+            .unwrap_or(&crate::config::eevdf::PROFILE_DEFAULT)
     }
 
-    pub fn cfs_responsive_config(&self) -> &crate::config::cfs::Profile {
-        self.cfs_config("responsive")
-            .unwrap_or(&crate::config::cfs::PROFILE_RESPONSIVE)
+    pub fn eevdf_responsive_config(&self) -> &crate::config::eevdf::Profile {
+        self.eevdf_config("responsive")
+            .unwrap_or(&crate::config::eevdf::PROFILE_RESPONSIVE)
     }
 
     /// Periodically shrinks buffers and removes dead processes to keep total memory consumption low.
@@ -679,7 +679,11 @@ impl<'owner> Service<'owner> {
     ///
     /// Assigns the background or foreground process priority, if that feature is enabled.
     pub fn remove_pipewire_process(&mut self, buffer: &mut Buffer, process_id: u32) {
-        let Some(index) = self.pipewire_processes.iter().position(|pid| *pid == process_id) else {
+        let Some(index) = self
+            .pipewire_processes
+            .iter()
+            .position(|pid| *pid == process_id)
+        else {
             return;
         };
 
