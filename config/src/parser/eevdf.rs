@@ -1,8 +1,8 @@
-use crate::{cfs::Config, kdl::NodeExt};
+use crate::{eevdf::Config, kdl::NodeExt};
 use kdl::KdlNode;
 
 impl Config {
-    /// Parses the CFS document node
+    /// Parses the EEVDF document node.
     pub fn read(&mut self, node: &KdlNode) {
         self.enable = node.enabled().unwrap_or(true);
 
@@ -14,7 +14,7 @@ impl Config {
             return;
         };
 
-        for (name, profile) in crate::cfs::parse(profiles.nodes()) {
+        for (name, profile) in crate::eevdf::parse(profiles.nodes()) {
             self.profiles.insert(name.into(), profile);
         }
     }
