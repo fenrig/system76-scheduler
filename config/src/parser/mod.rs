@@ -181,10 +181,7 @@ mod tests {
                     config.process_scheduler.assignments.parse(node);
                 }
                 "exceptions" => {
-                    config
-                        .process_scheduler
-                        .assignments
-                        .parse_exceptions(node);
+                    config.process_scheduler.assignments.parse_exceptions(node);
                 }
                 _ => (),
             }
@@ -201,7 +198,10 @@ mod tests {
         read_assignments_into_config(&mut config, include_str!("../../../data/default-apps.kdl"));
         read_assignments_into_config(&mut config, include_str!("../../../data/pop_os.kdl"));
         read_assignments_into_config(&mut config, include_str!("../../../data/kde_plasma.kdl"));
-        read_assignments_into_config(&mut config, include_str!("../../../data/user-overrides.kdl"));
+        read_assignments_into_config(
+            &mut config,
+            include_str!("../../../data/user-overrides.kdl"),
+        );
 
         let games = config
             .process_scheduler
@@ -238,6 +238,17 @@ mod tests {
             .unwrap();
         assert_eq!(pipewire_playback.nice.unwrap().get(), 3);
 
+        let cgroup_weights = config.process_scheduler.cgroup_weights.as_ref().unwrap();
+        assert!(cgroup_weights.enable);
+        assert_eq!(cgroup_weights.default.cpu, 100);
+        assert_eq!(cgroup_weights.default.io, 100);
+        assert_eq!(cgroup_weights.pipewire_capture.cpu, 800);
+        assert_eq!(cgroup_weights.pipewire_capture.io, 800);
+        assert_eq!(cgroup_weights.pipewire_playback.cpu, 400);
+        assert_eq!(cgroup_weights.pipewire_playback.io, 400);
+        assert_eq!(cgroup_weights.foreground.cpu, 800);
+        assert_eq!(cgroup_weights.foreground.io, 800);
+
         let game_services = config
             .process_scheduler
             .assignments
@@ -254,15 +265,27 @@ mod tests {
         assert!(game_services_rules
             .1
             .iter()
-            .any(|(condition, include)| *include && condition.name.as_ref().is_some_and(|name| name.matches("wineserver"))));
+            .any(|(condition, include)| *include
+                && condition
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.matches("wineserver"))));
         assert!(!game_services_rules
             .1
             .iter()
-            .any(|(condition, include)| *include && condition.name.as_ref().is_some_and(|name| name.matches("wine64-preloader"))));
+            .any(|(condition, include)| *include
+                && condition
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.matches("wine64-preloader"))));
         assert!(!game_services_rules
             .1
             .iter()
-            .any(|(condition, include)| *include && condition.name.as_ref().is_some_and(|name| name.matches("proton-cachyos-slr"))));
+            .any(|(condition, include)| *include
+                && condition
+                    .name
+                    .as_ref()
+                    .is_some_and(|name| name.matches("proton-cachyos-slr"))));
         assert!(config
             .process_scheduler
             .assignments
@@ -409,7 +432,10 @@ mod tests {
             .assignments
             .exceptions_conditions
             .iter()
-            .any(|condition| condition.descends.as_ref().is_some_and(|descends| descends.matches("gamemoderun"))));
+            .any(|condition| condition
+                .descends
+                .as_ref()
+                .is_some_and(|descends| descends.matches("gamemoderun"))));
 
         let session_services = config
             .process_scheduler

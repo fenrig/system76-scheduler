@@ -1,6 +1,7 @@
 // Copyright 2022 System76 <debug@system76.com>
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::cgroup_weights;
 use crate::config::scheduler::Profile;
 use crate::eevdf::paths::SchedPaths;
 use crate::process::{self, Process};
@@ -8,14 +9,15 @@ use crate::utils::Buffer;
 use qcell::{LCell, LCellOwner};
 use std::collections::BTreeMap;
 use std::{os::unix::prelude::OsStrExt, sync::Arc};
-use system76_scheduler_pipewire::ProcessKind;
 use system76_scheduler_config::scheduler::Condition;
+use system76_scheduler_pipewire::ProcessKind;
 
 pub struct Service<'owner> {
     pub config: crate::config::Config,
     assign_scan: Vec<u32>,
     assign_scanned: Vec<u32>,
     assign_tasks: Vec<u32>,
+    cgroup_weights: cgroup_weights::State,
     eevdf_paths: Option<SchedPaths>,
     foreground_processes: Vec<u32>,
     foreground: Option<ForegroundTarget>,
@@ -38,6 +40,7 @@ impl<'owner> Service<'owner> {
             assign_scan: Vec::with_capacity(16),
             assign_scanned: Vec::with_capacity(16),
             assign_tasks: Vec::with_capacity(16),
+            cgroup_weights: cgroup_weights::State::default(),
             eevdf_paths: SchedPaths::new().ok(),
             config: crate::config::Config::default(),
             foreground_processes: Vec::with_capacity(256),
@@ -266,6 +269,7 @@ impl<'owner> Service<'owner> {
 
         self.assign_process_priority(&process);
         self.apply_process_priority(buffer, process.ro(&self.owner));
+        self.reconcile_cgroup_weights(buffer);
     }
 
     pub fn apply_process_priority(&self, buffer: &mut Buffer, process: &Process<'owner>) {
@@ -301,7 +305,8 @@ impl<'owner> Service<'owner> {
                     }
                 } else if let Some(kind) = self.process_is_pipewire_kind(process) {
                     if kind == ProcessKind::Playback {
-                        if let Some(profile) = self.config.process_scheduler.pipewire_playback.as_ref()
+                        if let Some(profile) =
+                            self.config.process_scheduler.pipewire_playback.as_ref()
                         {
                             crate::priority::set(buffer, process.id, profile);
                             return;
@@ -586,11 +591,13 @@ impl<'owner> Service<'owner> {
 
         // Reassign foreground processes in case they were overridden.
         self.reapply_foreground(buffer);
+        self.reconcile_cgroup_weights(buffer);
     }
 
     /// Reloads the configuration files.
-    pub fn reload_configuration(&mut self) {
+    pub fn reload_configuration(&mut self, buffer: &mut Buffer) {
         self.config = crate::config::config();
+        self.reconcile_cgroup_weights(buffer);
     }
 
     /// Sets a process as the foreground.
@@ -614,6 +621,8 @@ impl<'owner> Service<'owner> {
                 }
             }
         }
+
+        self.reconcile_cgroup_weights(buffer);
     }
 
     /// Sets a cgroup subtree as the foreground.
@@ -632,6 +641,7 @@ impl<'owner> Service<'owner> {
         self.foreground = Some(ForegroundTarget::Cgroup(cgroup));
         self.foreground_processes.clear();
         self.reapply_foreground(buffer);
+        self.reconcile_cgroup_weights(buffer);
     }
 
     /// Clears the active foreground process or cgroup target.
@@ -642,6 +652,7 @@ impl<'owner> Service<'owner> {
 
         self.foreground_processes.clear();
         self.reapply_foreground(buffer);
+        self.reconcile_cgroup_weights(buffer);
     }
 
     fn reapply_foreground(&mut self, buffer: &mut Buffer) {
@@ -668,12 +679,7 @@ impl<'owner> Service<'owner> {
     }
 
     /// Assigns a process to the pipewire profile if it does not already have an assignment.
-    pub fn set_pipewire_process(
-        &mut self,
-        buffer: &mut Buffer,
-        kind: ProcessKind,
-        process: u32,
-    ) {
+    pub fn set_pipewire_process(&mut self, buffer: &mut Buffer, kind: ProcessKind, process: u32) {
         self.assign_children(buffer, process);
 
         let managed = match kind {
@@ -681,15 +687,22 @@ impl<'owner> Service<'owner> {
             ProcessKind::Playback => &mut self.pipewire_playback_processes,
         };
 
+        let mut assignable = true;
+
         if !managed.contains(&process) {
             if let Some(process) = self.process_map.get_pid(process) {
                 let process = process.ro(&self.owner);
                 if OwnedPriority::Assignable != process.assigned_priority {
-                    return;
+                    assignable = false;
                 }
             }
 
             managed.push(process);
+        }
+
+        if !assignable {
+            self.reconcile_cgroup_weights(buffer);
+            return;
         }
 
         for current_cell in self.process_map.map.values() {
@@ -700,7 +713,7 @@ impl<'owner> Service<'owner> {
             let ascended = if kind == ProcessKind::Capture {
                 if let Some(root_cell) = self.process_map.get_pid(process) {
                     let root = root_cell.ro(&self.owner);
-                    self.process_descended_from(&root, pid)
+                    self.process_descended_from(root, pid)
                 } else {
                     false
                 }
@@ -712,17 +725,15 @@ impl<'owner> Service<'owner> {
                 if pid == process {
                     let current = current_cell.ro(&self.owner);
                     self.apply_process_priority(buffer, current);
-                } else if descended && kind == ProcessKind::Capture {
-                    current_cell.rw(&mut self.owner).pipewire_ancestor = Some(process);
-                    let current = current_cell.ro(&self.owner);
-                    self.apply_process_priority(buffer, current);
-                } else if ascended {
+                } else if (descended && kind == ProcessKind::Capture) || ascended {
                     current_cell.rw(&mut self.owner).pipewire_ancestor = Some(process);
                     let current = current_cell.ro(&self.owner);
                     self.apply_process_priority(buffer, current);
                 }
             }
         }
+
+        self.reconcile_cgroup_weights(buffer);
     }
 
     /// Removes a process from the pipewire profile.
@@ -739,10 +750,7 @@ impl<'owner> Service<'owner> {
             ProcessKind::Playback => &mut self.pipewire_playback_processes,
         };
 
-        let Some(index) = managed
-            .iter()
-            .position(|pid| *pid == process_id)
-        else {
+        let Some(index) = managed.iter().position(|pid| *pid == process_id) else {
             return;
         };
 
@@ -751,7 +759,9 @@ impl<'owner> Service<'owner> {
         for process_cell in self.process_map.map.values() {
             let process = process_cell.rw(&mut self.owner);
 
-            if process.id == process_id || (kind == ProcessKind::Capture && process.pipewire_ancestor == Some(process_id)) {
+            if process.id == process_id
+                || (kind == ProcessKind::Capture && process.pipewire_ancestor == Some(process_id))
+            {
                 process.pipewire_ancestor = None;
                 let process = process_cell.ro(&self.owner);
 
@@ -760,6 +770,63 @@ impl<'owner> Service<'owner> {
                 }
             }
         }
+
+        self.reconcile_cgroup_weights(buffer);
+    }
+
+    fn reconcile_cgroup_weights(&mut self, buffer: &mut Buffer) {
+        let config = self.config.process_scheduler.cgroup_weights.clone();
+        let desired = config
+            .as_ref()
+            .filter(|config| config.enable)
+            .map(|config| self.desired_cgroup_weights(buffer, config))
+            .unwrap_or_default();
+
+        self.cgroup_weights.reconcile(config.as_ref(), desired);
+    }
+
+    fn desired_cgroup_weights(
+        &self,
+        buffer: &mut Buffer,
+        config: &crate::config::scheduler::CgroupWeights,
+    ) -> BTreeMap<String, crate::config::scheduler::CgroupWeight> {
+        let mut desired = BTreeMap::new();
+
+        for pid in self.pipewire_playback_processes.clone() {
+            if let Some(cgroup) = self.cgroup_for_pid(buffer, pid) {
+                desired.insert(app_scope_cgroup(&cgroup), config.pipewire_playback);
+            }
+        }
+
+        for pid in self.pipewire_capture_processes.clone() {
+            if let Some(cgroup) = self.cgroup_for_pid(buffer, pid) {
+                desired.insert(app_scope_cgroup(&cgroup), config.pipewire_capture);
+            }
+        }
+
+        if let Some(cgroup) = self.foreground_cgroup(buffer) {
+            desired.insert(app_scope_cgroup(&cgroup), config.foreground);
+        }
+
+        desired
+    }
+
+    fn foreground_cgroup(&self, buffer: &mut Buffer) -> Option<String> {
+        match self.foreground.as_ref()? {
+            ForegroundTarget::Cgroup(cgroup) => Some(cgroup.clone()),
+            ForegroundTarget::Process(pid) => self.cgroup_for_pid(buffer, *pid),
+        }
+    }
+
+    fn cgroup_for_pid(&self, buffer: &mut Buffer, pid: u32) -> Option<String> {
+        if let Some(process) = self.process_map.get_pid(pid) {
+            let process = process.ro(&self.owner);
+            if !process.cgroup.is_empty() {
+                return Some(process.cgroup.clone());
+            }
+        }
+
+        process::cgroup(buffer, pid).map(ToOwned::to_owned)
     }
 }
 
@@ -786,6 +853,18 @@ fn process_cgroup_matches(process: &str, foreground: &str) -> bool {
         || process
             .strip_prefix(foreground)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn app_scope_cgroup(cgroup: &str) -> String {
+    let Some((prefix, rest)) = cgroup.split_once("/app.slice/") else {
+        return cgroup.to_owned();
+    };
+
+    let Some(app_scope) = rest.split('/').next().filter(|scope| !scope.is_empty()) else {
+        return cgroup.to_owned();
+    };
+
+    format!("{prefix}/app.slice/{app_scope}")
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -818,7 +897,7 @@ impl OwnedPriority {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_foreground_cgroup, process_cgroup_matches};
+    use super::{app_scope_cgroup, normalize_foreground_cgroup, process_cgroup_matches};
 
     #[test]
     fn foreground_cgroup_matches_exact_scope() {
@@ -851,5 +930,25 @@ mod tests {
             "/user.slice/app.scope"
         );
         assert_eq!(normalize_foreground_cgroup("/"), "/");
+    }
+
+    #[test]
+    fn cgroup_weights_target_app_scope() {
+        assert_eq!(
+            app_scope_cgroup(
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.test.scope/main.scope"
+            ),
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.test.scope"
+        );
+        assert_eq!(
+            app_scope_cgroup(
+                "/user.slice/user-1000.slice/user@1000.service/app.slice/app-firefox@abc.service"
+            ),
+            "/user.slice/user-1000.slice/user@1000.service/app.slice/app-firefox@abc.service"
+        );
+        assert_eq!(
+            app_scope_cgroup("/system.slice/dbus-broker.service"),
+            "/system.slice/dbus-broker.service"
+        );
     }
 }

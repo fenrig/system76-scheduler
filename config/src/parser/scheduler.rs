@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use crate::kdl::NodeExt;
-use crate::scheduler::{Assignments, Condition, Config, MatchCondition, Profile};
+use crate::scheduler::{
+    Assignments, CgroupWeight, CgroupWeights, Condition, Config, MatchCondition, Profile,
+};
 use crate::{
     kdl::EntryExt,
     scheduler::{IoClass, Niceness, SchedPolicy, SchedPriority},
@@ -37,6 +39,10 @@ impl Config {
 
                     "assignments" => self.assignments.parse(node),
 
+                    "cgroup-weights" => {
+                        self.cgroup_weights = Some(CgroupWeights::parse(node));
+                    }
+
                     "exceptions" => self.assignments.parse_exceptions(node),
 
                     other => {
@@ -46,6 +52,57 @@ impl Config {
             }
         }
     }
+}
+
+impl CgroupWeights {
+    fn parse(node: &KdlNode) -> Self {
+        let mut config = Self {
+            enable: node.enabled().unwrap_or(true),
+            ..Self::default()
+        };
+
+        let Some(document) = node.children() else {
+            return config;
+        };
+
+        for (name, node) in crate::kdl::fields(document) {
+            let weight = parse_cgroup_weight(node);
+
+            match name {
+                "default" => config.default = weight,
+                "pipewire-capture" => config.pipewire_capture = weight,
+                "pipewire-playback" => config.pipewire_playback = weight,
+                "foreground" => config.foreground = weight,
+                other => tracing::warn!("unknown cgroup weight profile: {}", other),
+            }
+        }
+
+        config
+    }
+}
+
+fn parse_cgroup_weight(node: &KdlNode) -> CgroupWeight {
+    let mut weight = CgroupWeight::new(100, 100);
+
+    for (property, entry) in crate::kdl::iter_properties(node) {
+        let value = entry
+            .value()
+            .as_i64()
+            .and_then(|value| u16::try_from(value).ok());
+
+        let Some(value) = value else {
+            tracing::warn!("cgroup weight property expects an integer");
+            continue;
+        };
+
+        match property {
+            "cpu" => weight.cpu = value.clamp(1, 10000),
+            "io" => weight.io = value.clamp(1, 10000),
+            other => tracing::warn!("unknown cgroup weight property: {}", other),
+        }
+    }
+
+    weight
 }
 
 impl Assignments {
@@ -262,7 +319,7 @@ impl Profile {
     pub fn parse_nice(&mut self, entry: &KdlEntry) {
         let Some(niceness) = entry.as_i8() else {
             tracing::error!("expects number between -20 and 19");
-            return
+            return;
         };
 
         self.nice = Some(Niceness::from(niceness));
@@ -274,12 +331,12 @@ impl Profile {
         if let Some(policy) = entry.ty().map(KdlIdentifier::value) {
             let Ok(policy) = policy.parse::<SchedPolicy>() else {
                 tracing::error!("unknown sched policy");
-                return
+                return;
             };
 
             let Some(priority) = entry.as_u8() else {
                 tracing::error!("expected priority assignment between 1-99");
-                return
+                return;
             };
 
             self.sched_policy = policy;
@@ -290,7 +347,7 @@ impl Profile {
 
         let Some(policy) = entry.parse_to::<SchedPolicy>() else {
             tracing::error!("expected one of: batch deadline fifo idle other rr");
-            return
+            return;
         };
 
         self.sched_policy = policy;

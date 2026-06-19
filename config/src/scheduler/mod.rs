@@ -25,6 +25,8 @@ pub struct Config {
     pub pipewire: Option<Profile>,
     /// Pipewire playback profile
     pub pipewire_playback: Option<Profile>,
+    /// Cgroup v2 resource weights for foreground and media application scopes
+    pub cgroup_weights: Option<CgroupWeights>,
 }
 
 impl Default for Config {
@@ -37,6 +39,7 @@ impl Default for Config {
             foreground: None,
             pipewire: None,
             pipewire_playback: None,
+            cgroup_weights: None,
         }
     }
 }
@@ -47,6 +50,53 @@ pub struct ForegroundAssignments {
     pub background: Profile,
     /// Foreground profile
     pub foreground: Profile,
+}
+
+/// Cgroup v2 resource weight configuration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CgroupWeights {
+    /// Enables cgroup weight adjustments.
+    pub enable: bool,
+    /// Weight restored when a cgroup is no longer boosted.
+    pub default: CgroupWeight,
+    /// Weight applied to cgroups containing PipeWire capture or MIDI clients.
+    pub pipewire_capture: CgroupWeight,
+    /// Weight applied to cgroups containing PipeWire playback clients.
+    pub pipewire_playback: CgroupWeight,
+    /// Weight applied to the foreground cgroup.
+    pub foreground: CgroupWeight,
+}
+
+impl Default for CgroupWeights {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            default: CgroupWeight { cpu: 100, io: 100 },
+            pipewire_capture: CgroupWeight { cpu: 800, io: 800 },
+            pipewire_playback: CgroupWeight { cpu: 400, io: 400 },
+            foreground: CgroupWeight { cpu: 800, io: 800 },
+        }
+    }
+}
+
+/// Cgroup v2 CPU and I/O weights.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CgroupWeight {
+    /// CPU weight written to `cpu.weight`.
+    pub cpu: u16,
+    /// I/O weight written to `io.weight`.
+    pub io: u16,
+}
+
+impl CgroupWeight {
+    /// Creates a cgroup weight, clamping values to the cgroup v2 range.
+    #[must_use]
+    pub fn new(cpu: u16, io: u16) -> Self {
+        Self {
+            cpu: cpu.clamp(1, 10000),
+            io: io.clamp(1, 10000),
+        }
+    }
 }
 
 /// I/O Class

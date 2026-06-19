@@ -24,6 +24,16 @@ process-scheduler enable=true {
     // Enable realtime process priority adjustment with execsnoop
     execsnoop true
 
+    // Cgroup v2 CPU and I/O weights for application scopes. These mirror
+    // uresourced's default AppBoost model: default 100, boost +300, active
+    // 500, and active+boosted 800.
+    cgroup-weights enable=true {
+        default cpu=100 io=100
+        pipewire-capture cpu=800 io=800
+        pipewire-playback cpu=400 io=400
+        foreground cpu=800 io=800
+    }
+
     // Preset process assignment profiles
     assignments {
         // Prevent crackling and distortion from the sound server
