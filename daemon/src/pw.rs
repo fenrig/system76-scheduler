@@ -1,12 +1,12 @@
 use crate::Event;
 use std::{
-    collections::BTreeSet,
+    collections::BTreeMap,
     io::Write,
     os::unix::{net::UnixStream, prelude::OwnedFd},
     path::PathBuf,
     time::Duration,
 };
-use system76_scheduler_pipewire::{processes_from_socket, ProcessEvent};
+use system76_scheduler_pipewire::{processes_from_socket, ProcessEvent, ProcessKind};
 use tokio::{io::AsyncBufReadExt, sync::mpsc::Sender};
 
 pub async fn main() -> anyhow::Result<()> {
@@ -67,14 +67,14 @@ async fn pipewire_service(tx: Sender<ProcessEvent>) {
     };
 
     let session_spawner = async move {
-        let mut active_sessions = BTreeSet::<PathBuf>::new();
+        let mut active_sessions = BTreeMap::<PathBuf, ()>::new();
 
         while let Some(event) = pw_rx.recv().await {
             match event {
                 SocketEvent::Add(socket) => {
-                    if !active_sessions.contains(&socket) {
+                    if !active_sessions.contains_key(&socket) {
                         if let Ok(stream) = UnixStream::connect(&socket) {
-                            active_sessions.insert(socket.clone());
+                            active_sessions.insert(socket.clone(), ());
                             let tx = tx.clone();
                             let pw_tx = pw_tx.clone();
                             std::thread::spawn(move || {
@@ -102,7 +102,12 @@ async fn pipewire_service(tx: Sender<ProcessEvent>) {
 /// This is done to isolate libpipewire from the daemon. If a crash occurs from the pipewire-rs bindings,
 /// or the libpipewire library itelf, this will gracefully restart the process without losing any data.
 pub(crate) async fn monitor(tx: Sender<Event>) {
-    let mut managed = BTreeSet::<u32>::new();
+    let mut managed = BTreeMap::<u32, ProcessKind>::new();
+
+    let kind_rank = |kind: ProcessKind| match kind {
+        ProcessKind::Playback => 0,
+        ProcessKind::Capture => 1,
+    };
 
     loop {
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -150,16 +155,23 @@ pub(crate) async fn monitor(tx: Sender<Event>) {
 
             if let Some(event) = ProcessEvent::from_bytes(&line) {
                 match event {
-                    ProcessEvent::Add(pid) => {
-                        if !managed.insert(pid) {
-                            continue;
+                    ProcessEvent::Add(kind, pid) => {
+                        if let Some(existing) = managed.get(&pid).copied() {
+                            if kind_rank(existing) >= kind_rank(kind) {
+                                continue;
+                            }
                         }
+
+                        managed.insert(pid, kind);
+
                         tracing::debug!("{pid} started using pipewire");
                     }
-                    ProcessEvent::Remove(pid) => {
-                        if !managed.remove(&pid) {
+                    ProcessEvent::Remove(kind, pid) => {
+                        if managed.get(&pid).copied() != Some(kind) {
                             continue;
                         }
+
+                        managed.remove(&pid);
                         tracing::debug!("{pid} stopped using pipewire");
                     }
                 }

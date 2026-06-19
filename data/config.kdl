@@ -36,8 +36,11 @@ process-scheduler enable=true {
         // Applications with realtime audio processing needs
         recording nice=-9 io=(best-effort)0
 
-        // Enables pipewire process monitoring and assignments
+        // Capture and MIDI processing
         pipewire nice=-6 io=(best-effort)0
+
+        // Audio and video playback clients
+        pipewire-playback nice=3 io=(best-effort)3
 
         // Video games explicitly assigned by user or distribution profiles
         games nice=2 io=(best-effort)2

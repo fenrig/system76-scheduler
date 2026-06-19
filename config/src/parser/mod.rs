@@ -39,6 +39,12 @@ pub fn read_config() -> Config {
         .profiles
         .remove("pipewire");
 
+    config.process_scheduler.pipewire_playback = config
+        .process_scheduler
+        .assignments
+        .profiles
+        .remove("pipewire-playback");
+
     config
 }
 
@@ -212,6 +218,25 @@ mod tests {
             .unwrap();
 
         assert_eq!(recording.nice.unwrap().get(), -9);
+        assert!(config
+            .process_scheduler
+            .assignments
+            .get_by_name("mumble")
+            .is_some());
+
+        let pipewire = config
+            .process_scheduler
+            .assignments
+            .profile("pipewire")
+            .unwrap();
+        assert_eq!(pipewire.nice.unwrap().get(), -6);
+
+        let pipewire_playback = config
+            .process_scheduler
+            .assignments
+            .profile("pipewire-playback")
+            .unwrap();
+        assert_eq!(pipewire_playback.nice.unwrap().get(), 3);
 
         let game_services = config
             .process_scheduler
@@ -262,7 +287,7 @@ mod tests {
             .process_scheduler
             .assignments
             .get_by_name("mumble")
-            .is_none());
+            .is_some());
         assert!(config
             .process_scheduler
             .assignments

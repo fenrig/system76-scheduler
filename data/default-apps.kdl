@@ -4,6 +4,7 @@ assignments {
 		easyeffects
 		jamesdsp
 		mixxx
+		mumble
 		wireplumber
 		bitwig-studio
 		include name="Bitwig*"
