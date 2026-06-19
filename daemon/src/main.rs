@@ -263,13 +263,13 @@ async fn daemon(
                 service.garbage_clean(&mut buffer);
             }
 
-            Event::Pipewire(scheduler_pipewire::ProcessEvent::Add(process)) => {
-                service.set_pipewire_process(&mut buffer, process);
+            Event::Pipewire(scheduler_pipewire::ProcessEvent::Add(kind, process)) => {
+                service.set_pipewire_process(&mut buffer, kind, process);
                 service.garbage_clean(&mut buffer);
             }
 
-            Event::Pipewire(scheduler_pipewire::ProcessEvent::Remove(process)) => {
-                service.remove_pipewire_process(&mut buffer, process);
+            Event::Pipewire(scheduler_pipewire::ProcessEvent::Remove(kind, process)) => {
+                service.remove_pipewire_process(&mut buffer, kind, process);
             }
 
             Event::OnBattery(on_battery) => {

@@ -34,9 +34,47 @@ pub enum NodeEvent<'a> {
 #[derive(Debug)]
 pub enum ProcessEvent {
     /// Process add
-    Add(u32),
+    Add(ProcessKind, u32),
     /// Process remove
-    Remove(u32),
+    Remove(ProcessKind, u32),
+}
+
+/// PipeWire process kind
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum ProcessKind {
+    /// Audio, MIDI, or video capture.
+    Capture,
+    /// Audio or video playback.
+    Playback,
+}
+
+impl ProcessKind {
+    fn from_media_class(media_class: &str) -> Option<Self> {
+        if should_boost_capture_media_class(media_class) {
+            return Some(Self::Capture);
+        }
+
+        if should_boost_playback_media_class(media_class) {
+            return Some(Self::Playback);
+        }
+
+        None
+    }
+
+    fn as_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Capture => b"cap",
+            Self::Playback => b"play",
+        }
+    }
+
+    fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        match bytes {
+            b"cap" => Some(Self::Capture),
+            b"play" => Some(Self::Playback),
+            _ => None,
+        }
+    }
 }
 
 impl ProcessEvent {
@@ -46,11 +84,12 @@ impl ProcessEvent {
         let mut fields = BStr::new(bytes).split(|b| *b == b' ');
 
         let method = fields.next()?;
+        let kind = ProcessKind::from_bytes(fields.next()?)?;
         let pid = atoi::atoi::<u32>(fields.next()?)?;
 
         match method {
-            b"add" => Some(ProcessEvent::Add(pid)),
-            b"rem" => Some(ProcessEvent::Remove(pid)),
+            b"add" => Some(ProcessEvent::Add(kind, pid)),
+            b"rem" => Some(ProcessEvent::Remove(kind, pid)),
             _ => None,
         }
     }
@@ -59,12 +98,14 @@ impl ProcessEvent {
     ///
     /// - Failure to write bytes to writer
     pub fn to_bytes<W: std::io::Write>(&self, writer: &mut W) -> io::Result<()> {
-        let (method, pid) = match self {
-            ProcessEvent::Add(pid) => (b"add", *pid),
-            ProcessEvent::Remove(pid) => (b"rem", *pid),
+        let (method, kind, pid) = match self {
+            ProcessEvent::Add(kind, pid) => (b"add", *kind, *pid),
+            ProcessEvent::Remove(kind, pid) => (b"rem", *kind, *pid),
         };
 
         writer.write_all(method)?;
+        writer.write_all(b" ")?;
+        writer.write_all(kind.as_bytes())?;
         writer.write_all(b" ")?;
         writer.write_all(itoa::Buffer::new().format(pid).as_bytes())
     }
@@ -81,14 +122,48 @@ pub struct Process {
 impl Process {
     /// Attains process info from a pipewire info node.
     #[must_use]
-    pub fn from_node(info: &NodeInfo) -> Option<Self> {
+    pub fn from_node(info: &NodeInfo) -> Option<(ProcessKind, Self)> {
         let props = info.props()?;
+        let media_class = props.get("media.class")?;
+        let kind = ProcessKind::from_media_class(media_class)?;
         props.get("application.process.binary")?;
 
-        Some(Process {
-            id: props.get("application.process.id")?.parse::<u32>().ok()?,
-        })
+        Some((
+            kind,
+            Process {
+                id: props.get("application.process.id")?.parse::<u32>().ok()?,
+            },
+        ))
     }
+}
+
+/// Returns true when a PipeWire node should receive the capture profile.
+///
+/// We only boost nodes that are doing capture or MIDI work. Output-only clients
+/// such as browsers and games are left alone.
+#[must_use]
+pub fn should_boost_capture_media_class(media_class: &str) -> bool {
+    matches!(
+        media_class,
+        "Audio/Source"
+            | "Audio/Source/Virtual"
+            | "Midi/Source"
+            | "Midi/Source/Virtual"
+            | "Video/Source"
+            | "Video/Source/Virtual"
+    ) || media_class.starts_with("Stream/Input/Audio")
+        || media_class.starts_with("Stream/Input/Midi")
+        || media_class.starts_with("Stream/Input/Video")
+}
+
+/// Returns true when a PipeWire node should receive the playback profile.
+#[must_use]
+pub fn should_boost_playback_media_class(media_class: &str) -> bool {
+    matches!(
+        media_class,
+        "Audio/Sink" | "Audio/Sink/Virtual" | "Video/Sink" | "Video/Sink/Virtual"
+    ) || media_class.starts_with("Stream/Output/Audio")
+        || media_class.starts_with("Stream/Output/Video")
 }
 
 /// Monitors the processes from a given ``PipeWire`` socket.
@@ -99,16 +174,16 @@ pub fn processes_from_socket(socket: &OwnedFd, mut func: impl FnMut(ProcessEvent
 
     let _res = nodes_from_socket(socket, move |event| match event {
         NodeEvent::Info(pw_id, info) => {
-            if let Some(process) = Process::from_node(info) {
-                if managed.insert(pw_id, process.id).is_none() {
-                    func(ProcessEvent::Add(process.id));
+            if let Some((kind, process)) = Process::from_node(info) {
+                if managed.insert(pw_id, (kind, process)).is_none() {
+                    func(ProcessEvent::Add(kind, process.id));
                 }
             }
         }
 
         NodeEvent::Remove(pw_id) => {
-            if let Some(pid) = managed.remove(&pw_id) {
-                func(ProcessEvent::Remove(pid));
+            if let Some((kind, process)) = managed.remove(&pw_id) {
+                func(ProcessEvent::Remove(kind, process.id));
             }
         }
     });
@@ -204,4 +279,48 @@ pub fn nodes_from_socket(
 
     main_loop.run();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_boost_capture_media_class, should_boost_playback_media_class, ProcessEvent,
+    };
+
+    #[test]
+    fn parses_process_event_bytes() {
+        assert!(matches!(
+            ProcessEvent::from_bytes(b"add cap 123"),
+            Some(ProcessEvent::Add(_, 123))
+        ));
+        assert!(matches!(
+            ProcessEvent::from_bytes(b"rem play 456"),
+            Some(ProcessEvent::Remove(_, 456))
+        ));
+    }
+
+    #[test]
+    fn boosts_capture_audio_midi_and_playback_separately() {
+        assert!(should_boost_capture_media_class("Audio/Source"));
+        assert!(should_boost_capture_media_class("Audio/Source/Virtual"));
+        assert!(should_boost_capture_media_class("Stream/Input/Audio"));
+        assert!(should_boost_capture_media_class("Stream/Input/Audio/Monitor"));
+        assert!(should_boost_capture_media_class("Midi/Source"));
+        assert!(should_boost_capture_media_class("Stream/Input/Midi"));
+        assert!(should_boost_capture_media_class("Video/Source"));
+        assert!(should_boost_capture_media_class("Stream/Input/Video"));
+
+        assert!(should_boost_playback_media_class("Audio/Sink"));
+        assert!(should_boost_playback_media_class("Audio/Sink/Virtual"));
+        assert!(should_boost_playback_media_class("Stream/Output/Audio"));
+        assert!(should_boost_playback_media_class("Video/Sink"));
+        assert!(should_boost_playback_media_class("Stream/Output/Video"));
+
+        assert!(!should_boost_capture_media_class("Audio/Sink"));
+        assert!(!should_boost_capture_media_class("Stream/Output/Audio"));
+        assert!(!should_boost_playback_media_class("Audio/Source"));
+        assert!(!should_boost_playback_media_class("Stream/Input/Audio"));
+        assert!(!should_boost_capture_media_class("Music"));
+        assert!(!should_boost_playback_media_class("Music"));
+    }
 }

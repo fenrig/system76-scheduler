@@ -23,6 +23,8 @@ pub struct Config {
     pub foreground: Option<ForegroundAssignments>,
     /// Pipewire profile
     pub pipewire: Option<Profile>,
+    /// Pipewire playback profile
+    pub pipewire_playback: Option<Profile>,
 }
 
 impl Default for Config {
@@ -34,6 +36,7 @@ impl Default for Config {
             assignments: Assignments::default(),
             foreground: None,
             pipewire: None,
+            pipewire_playback: None,
         }
     }
 }

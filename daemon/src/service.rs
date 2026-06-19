@@ -8,6 +8,7 @@ use crate::utils::Buffer;
 use qcell::{LCell, LCellOwner};
 use std::collections::BTreeMap;
 use std::{os::unix::prelude::OsStrExt, sync::Arc};
+use system76_scheduler_pipewire::ProcessKind;
 use system76_scheduler_config::scheduler::Condition;
 
 pub struct Service<'owner> {
@@ -20,7 +21,8 @@ pub struct Service<'owner> {
     foreground: Option<ForegroundTarget>,
     gc_counter: usize,
     owner: LCellOwner<'owner>,
-    pipewire_processes: Vec<u32>,
+    pipewire_capture_processes: Vec<u32>,
+    pipewire_playback_processes: Vec<u32>,
     process_map: process::Map<'owner>,
 }
 
@@ -42,7 +44,8 @@ impl<'owner> Service<'owner> {
             foreground: None,
             gc_counter: 0,
             owner,
-            pipewire_processes: Vec::with_capacity(4),
+            pipewire_capture_processes: Vec::with_capacity(4),
+            pipewire_playback_processes: Vec::with_capacity(4),
             process_map: process::Map::default(),
         }
     }
@@ -242,7 +245,14 @@ impl<'owner> Service<'owner> {
 
         'outer: for process in process.ro(&self.owner).ancestors(&self.owner) {
             let process = process.ro(&self.owner);
-            for &ancestor in &self.pipewire_processes {
+            for &ancestor in &self.pipewire_capture_processes {
+                if process.id == ancestor || process.parent_id == ancestor {
+                    pipewire_ancestor = Some(ancestor);
+                    break 'outer;
+                }
+            }
+
+            for &ancestor in &self.pipewire_playback_processes {
                 if process.id == ancestor || process.parent_id == ancestor {
                     pipewire_ancestor = Some(ancestor);
                     break 'outer;
@@ -263,19 +273,43 @@ impl<'owner> Service<'owner> {
 
         let profile = match process.assigned_priority.as_ref() {
             Priority::Assignable => {
-                if let Some(ref profile) = self.config.process_scheduler.pipewire {
-                    if self.process_is_pipewire_assigned(process) {
-                        crate::priority::set(buffer, process.id, profile);
-                        return;
+                if let Some(kind) = self.process_is_pipewire_kind(process) {
+                    if kind == ProcessKind::Capture {
+                        if let Some(profile) = self.config.process_scheduler.pipewire.as_ref() {
+                            crate::priority::set(buffer, process.id, profile);
+                            return;
+                        }
                     }
                 }
 
                 if let Some(assignments) = &self.config.process_scheduler.foreground {
                     if self.process_is_foreground(process) {
                         &assignments.foreground
+                    } else if let Some(kind) = self.process_is_pipewire_kind(process) {
+                        if kind == ProcessKind::Playback {
+                            if let Some(profile) =
+                                self.config.process_scheduler.pipewire_playback.as_ref()
+                            {
+                                crate::priority::set(buffer, process.id, profile);
+                                return;
+                            }
+                        }
+
+                        &assignments.background
                     } else {
                         &assignments.background
                     }
+                } else if let Some(kind) = self.process_is_pipewire_kind(process) {
+                    if kind == ProcessKind::Playback {
+                        if let Some(profile) = self.config.process_scheduler.pipewire_playback.as_ref()
+                        {
+                            crate::priority::set(buffer, process.id, profile);
+                            return;
+                        }
+                    }
+
+                    profile_default = Profile::new(Arc::from("default"));
+                    &profile_default
                 } else {
                     profile_default = Profile::new(Arc::from("default"));
                     &profile_default
@@ -453,8 +487,16 @@ impl<'owner> Service<'owner> {
         false
     }
 
-    pub fn process_is_pipewire_assigned(&self, process: &Process<'owner>) -> bool {
-        process.pipewire_ancestor.is_some() || self.pipewire_processes.contains(&process.id)
+    pub fn process_is_pipewire_kind(&self, process: &Process<'owner>) -> Option<ProcessKind> {
+        let root = process.pipewire_ancestor.unwrap_or(process.id);
+
+        if self.pipewire_capture_processes.contains(&root) {
+            Some(ProcessKind::Capture)
+        } else if self.pipewire_playback_processes.contains(&root) {
+            Some(ProcessKind::Playback)
+        } else {
+            None
+        }
     }
 
     pub fn process_is_foreground(&self, process: &Process<'owner>) -> bool {
@@ -555,7 +597,7 @@ impl<'owner> Service<'owner> {
     pub fn set_foreground_process(&mut self, buffer: &mut Buffer, pid: u32) {
         self.assign_children(buffer, pid);
 
-        if let Some(ref assignments) = self.config.process_scheduler.foreground {
+        if self.config.process_scheduler.foreground.is_some() {
             self.foreground = Some(ForegroundTarget::Process(pid));
             self.foreground_processes.clear();
             self.foreground_processes.push(pid);
@@ -564,22 +606,11 @@ impl<'owner> Service<'owner> {
                 let process = process.ro(&self.owner);
 
                 if let Priority::Assignable = self.process_assignment(process.id) {
-                    let profile = if process.id == pid || self.process_descended_from(process, pid)
-                    {
+                    if process.id == pid || self.process_descended_from(process, pid) {
                         self.foreground_processes.push(process.id);
+                    }
 
-                        if self.process_is_pipewire_assigned(process) {
-                            continue;
-                        }
-
-                        &assignments.foreground
-                    } else if self.process_is_pipewire_assigned(process) {
-                        continue;
-                    } else {
-                        &assignments.background
-                    };
-
-                    crate::priority::set(buffer, process.id, profile);
+                    self.apply_process_priority(buffer, process);
                 }
             }
         }
@@ -614,9 +645,9 @@ impl<'owner> Service<'owner> {
     }
 
     fn reapply_foreground(&mut self, buffer: &mut Buffer) {
-        let Some(assignments) = &self.config.process_scheduler.foreground else {
+        if self.config.process_scheduler.foreground.is_none() {
             return;
-        };
+        }
 
         let foreground = self.foreground.clone();
         self.foreground_processes.clear();
@@ -625,18 +656,11 @@ impl<'owner> Service<'owner> {
             let process = process_cell.ro(&self.owner);
 
             if let Priority::Assignable = self.process_assignment(process.id) {
-                if self.process_is_pipewire_assigned(process) {
-                    continue;
+                if self.process_is_foreground(process) {
+                    self.foreground_processes.push(process.id);
                 }
 
-                let profile = if self.process_is_foreground(process) {
-                    self.foreground_processes.push(process.id);
-                    &assignments.foreground
-                } else {
-                    &assignments.background
-                };
-
-                crate::priority::set(buffer, process.id, profile);
+                self.apply_process_priority(buffer, process);
             }
         }
 
@@ -644,32 +668,58 @@ impl<'owner> Service<'owner> {
     }
 
     /// Assigns a process to the pipewire profile if it does not already have an assignment.
-    pub fn set_pipewire_process(&mut self, buffer: &mut Buffer, process: u32) {
+    pub fn set_pipewire_process(
+        &mut self,
+        buffer: &mut Buffer,
+        kind: ProcessKind,
+        process: u32,
+    ) {
         self.assign_children(buffer, process);
 
-        if let Some(pipewire) = self.config.process_scheduler.pipewire.clone() {
-            if !self.pipewire_processes.contains(&process) {
-                if let Some(process) = self.process_map.get_pid(process) {
-                    let process = process.ro(&self.owner);
-                    if OwnedPriority::Assignable != process.assigned_priority {
-                        return;
-                    }
-                }
+        let managed = match kind {
+            ProcessKind::Capture => &mut self.pipewire_capture_processes,
+            ProcessKind::Playback => &mut self.pipewire_playback_processes,
+        };
 
-                self.pipewire_processes.push(process);
+        if !managed.contains(&process) {
+            if let Some(process) = self.process_map.get_pid(process) {
+                let process = process.ro(&self.owner);
+                if OwnedPriority::Assignable != process.assigned_priority {
+                    return;
+                }
             }
 
-            for current_cell in self.process_map.map.values() {
-                let current = current_cell.ro(&self.owner);
-                let pid = current.id;
+            managed.push(process);
+        }
 
-                if let Priority::Assignable = self.process_assignment(current.id) {
-                    if pid == process {
-                        crate::priority::set(buffer, process, &pipewire);
-                    } else if self.process_descended_from(current, process) {
-                        current_cell.rw(&mut self.owner).pipewire_ancestor = Some(process);
-                        crate::priority::set(buffer, pid, &pipewire);
-                    }
+        for current_cell in self.process_map.map.values() {
+            let (pid, descended) = {
+                let current = current_cell.ro(&self.owner);
+                (current.id, self.process_descended_from(current, process))
+            };
+            let ascended = if kind == ProcessKind::Capture {
+                if let Some(root_cell) = self.process_map.get_pid(process) {
+                    let root = root_cell.ro(&self.owner);
+                    self.process_descended_from(&root, pid)
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if let Priority::Assignable = self.process_assignment(pid) {
+                if pid == process {
+                    let current = current_cell.ro(&self.owner);
+                    self.apply_process_priority(buffer, current);
+                } else if descended && kind == ProcessKind::Capture {
+                    current_cell.rw(&mut self.owner).pipewire_ancestor = Some(process);
+                    let current = current_cell.ro(&self.owner);
+                    self.apply_process_priority(buffer, current);
+                } else if ascended {
+                    current_cell.rw(&mut self.owner).pipewire_ancestor = Some(process);
+                    let current = current_cell.ro(&self.owner);
+                    self.apply_process_priority(buffer, current);
                 }
             }
         }
@@ -678,34 +728,35 @@ impl<'owner> Service<'owner> {
     /// Removes a process from the pipewire profile.
     ///
     /// Assigns the background or foreground process priority, if that feature is enabled.
-    pub fn remove_pipewire_process(&mut self, buffer: &mut Buffer, process_id: u32) {
-        let Some(index) = self
-            .pipewire_processes
+    pub fn remove_pipewire_process(
+        &mut self,
+        buffer: &mut Buffer,
+        kind: ProcessKind,
+        process_id: u32,
+    ) {
+        let managed = match kind {
+            ProcessKind::Capture => &mut self.pipewire_capture_processes,
+            ProcessKind::Playback => &mut self.pipewire_playback_processes,
+        };
+
+        let Some(index) = managed
             .iter()
             .position(|pid| *pid == process_id)
         else {
             return;
         };
 
-        self.pipewire_processes.remove(index);
+        managed.remove(index);
 
         for process_cell in self.process_map.map.values() {
             let process = process_cell.rw(&mut self.owner);
 
-            if process.pipewire_ancestor == Some(process_id) || process.id == process_id {
+            if process.id == process_id || (kind == ProcessKind::Capture && process.pipewire_ancestor == Some(process_id)) {
                 process.pipewire_ancestor = None;
                 let process = process_cell.ro(&self.owner);
 
-                if let Some(ref assignments) = self.config.process_scheduler.foreground {
-                    if let Priority::Assignable = self.process_assignment(process.id) {
-                        let profile = if self.foreground_processes.contains(&process.id) {
-                            &assignments.foreground
-                        } else {
-                            &assignments.background
-                        };
-
-                        crate::priority::set(buffer, process.id, profile);
-                    }
+                if let Priority::Assignable = self.process_assignment(process.id) {
+                    self.apply_process_priority(buffer, process);
                 }
             }
         }
