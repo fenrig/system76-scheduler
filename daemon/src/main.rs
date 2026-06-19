@@ -12,6 +12,7 @@ use qcell::LCellOwner;
 pub use system76_scheduler_config as config;
 use system76_scheduler_pipewire as scheduler_pipewire;
 
+mod cgroup_weights;
 mod dbus;
 mod eevdf;
 mod priority;
@@ -160,7 +161,7 @@ async fn daemon(
     }
 
     let service = &mut service::Service::new(owner);
-    service.reload_configuration();
+    service.reload_configuration(&mut buffer);
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
 
@@ -326,7 +327,7 @@ async fn daemon(
 
             Event::ReloadConfiguration => {
                 tracing::debug!("reloading configuration");
-                service.reload_configuration();
+                service.reload_configuration(&mut buffer);
                 autogroup_set(service.config.autogroup_enabled);
             }
         }
