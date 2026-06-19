@@ -386,6 +386,32 @@ mod tests {
             .iter()
             .any(|condition| condition.descends.as_ref().is_some_and(|descends| descends.matches("gamemoderun"))));
 
+        let session_services = config
+            .process_scheduler
+            .assignments
+            .conditions
+            .get("session-services")
+            .unwrap();
+
+        let firefox_cgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/app-firefox@dbf4749b12dd490cabc9fceedda97a7a.service";
+        let firefox_included = session_services.1.iter().any(|(condition, include)| {
+            *include
+                && condition
+                    .cgroup
+                    .as_ref()
+                    .is_some_and(|cgroup| cgroup.matches(firefox_cgroup))
+        });
+        let firefox_excluded = session_services.1.iter().any(|(condition, include)| {
+            !*include
+                && condition
+                    .cgroup
+                    .as_ref()
+                    .is_some_and(|cgroup| cgroup.matches(firefox_cgroup))
+        });
+
+        assert!(firefox_included);
+        assert!(firefox_excluded);
+
         assert!(config
             .process_scheduler
             .assignments
