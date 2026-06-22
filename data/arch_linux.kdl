@@ -1,7 +1,9 @@
 assignments {
 	package-manager {
 		makepkg
+		include descends="makepkg"
 		pacman
+		include descends="pacman"
 		paru
 		pikaur
 		trizen

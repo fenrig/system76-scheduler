@@ -14,6 +14,9 @@ assignments {
 		plasma_session
 		plasmashell
 		xembedsniproxy
+		maliit-keyboard
+		plasmalogin
+		plasmalogin-helper
 	}
 
 	session-services nice=10 io="idle" {
